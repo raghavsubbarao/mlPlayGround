@@ -15,26 +15,60 @@ class baseTorchModel(torch.nn.Module):
             train_loop(dataset, optimizer)
             test_loop(test_dl,)
 
-    def train_loop(self, dataLoader, optimizer, epochs):
+    def trainLoop(self, trainDataLoader, optimizer, epochs,
+                  reportIters=100,
+                  scheduler=None,
+                  checkpointPath=None, checkPointName=None,
+                  validDataLoader=None):
 
-        size = len(dataLoader.dataset)
+        trainSize = len(trainDataLoader.dataset)
+        bestValidation = None
 
         for t in range(epochs):
             print(f"Epoch {t + 1}\n-------------------------------")
 
-            # Set the model to training mode - important
-            # for batch norm and dropout.
+            # Set the model to training mode - do here
+            # in case theres a validation dataset
             self.train()
 
-            for batch, data in enumerate(dataLoader):
-                metrics = self.train_step(data, optimizer)
+            for batch, data in enumerate(trainDataLoader):
+                metrics = self.trainStep(data, optimizer)
 
-                if (batch + 1) % 100 == 0:
+                if (batch + 1) % reportIters == 0:
                     print(' '.join([f'{l}: {metrics[l]:>7f}' for l in metrics]) +
-                          f'[{(batch + 1) * dataLoader.batch_size:>5d}/{size:>5d}]')
+                          f'[{(batch + 1) * trainDataLoader.batch_size:>5d}/{trainSize:>5d}]')
+
+            if validDataLoader:
+                self.eval()
+
+                validationLoss = 0
+                for data in validDataLoader:
+                    validationLoss += self.validStep(data)
+
+                validationLoss /= len(validDataLoader)
+
+                if bestValidation is None or bestValidation > validationLoss:
+                    bestValidation = validationLoss
+
+                print(f"Validation Error: {validationLoss:>7f}")
+
+            if checkpointPath:
+                assert(checkPointName is not None)
+                modelDict = {'epoch': t, 'model_state_dict': self.state_dict(),
+                             'optimizer_state_dict': optimizer.state_dict()}
+                if validDataLoader:
+                    modelDict['validation_loss'] = validationLoss
+                torch.save(modelDict, checkpointPath + f'{checkPointName}-{t}.model')
+
+            if scheduler:
+                scheduler.step()
 
     @abc.abstractmethod
-    def train_step(self, data, optimizer):
+    def trainStep(self, data, optimizer):
+        pass
+
+    @abc.abstractmethod
+    def validStep(self, data):
         pass
 
 
@@ -46,7 +80,7 @@ class baseLossTracker:
     def clear(self):
         self.__losses = []
 
-    def update_state(self, loss):
+    def updateState(self, loss):
         self.__losses.append(loss)
 
     def result(self):
