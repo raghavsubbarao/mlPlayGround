@@ -2,7 +2,6 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-# from tensorflow.keras.losses import binary_crossentropy as bce
 from tensorflow.keras import Sequential
 
 from tensorflow.python.framework import dtypes
@@ -10,67 +9,81 @@ from tensorflow.python.keras import backend as K
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.keras.engine.input_spec import InputSpec
 
+# TODO: Add type specs
 
 #################################
 #               RBM             #
 #################################
-class transposeLayer(layers.Dense):
-    def __init__(self, denseLayer,
-                 activation=None, use_bias=True,
-                 bias_initializer='zeros',
-                 bias_regularizer=None,
-                 activity_regularizer=None,
-                 bias_constraint=None,
-                 **kwargs):
-        self.__denseLayer = denseLayer
-
-        super(transposeLayer, self).__init__(denseLayer._batch_input_shape[-1],
-                                             activation=activation,
-                                             use_bias=use_bias,
-                                             bias_initializer=bias_initializer,
-                                             bias_regularizer=bias_regularizer,
-                                             activity_regularizer=activity_regularizer,
-                                             bias_constraint=bias_constraint,
-                                             input_shape=(denseLayer.units,),
-                                             **kwargs)
-
-    @property
-    def denseLayer(self):
-        return self.__denseLayer
-
-    def build(self, input_shape):
-        dtype = dtypes.as_dtype(self.dtype or K.floatx())
-        if not (dtype.is_floating or dtype.is_complex):
-            raise TypeError('Unable to build `Dense` layer with non-floating point '
-                            'dtype %s' % (dtype,))
-
-        input_shape = tensor_shape.TensorShape(input_shape)
-        last_dim = tensor_shape.dimension_value(input_shape[-1])
-        if last_dim is None:
-            raise ValueError('The last dimension of the inputs to `Dense` '
-                             'should be defined. Found `None`.')
-        self.input_spec = InputSpec(min_ndim=2, axes={-1: last_dim})
-
-        # self.kernel = tf.transpose(self.__denseLayer.kernel)
-
-        if self.use_bias:
-            self.bias = self.add_weight('bias',
-                                        shape=[self.units,],
-                                        initializer=self.bias_initializer,
-                                        regularizer=self.bias_regularizer,
-                                        constraint=self.bias_constraint,
-                                        dtype=self.dtype,
-                                        trainable=True)
-        else:
-            self.bias = None
-
-        self.built = True
-
-    def call(self, inputs):
-        z = tf.matmul(inputs, tf.transpose(self.denseLayer.weights[0]))
-        if self.use_bias:
-            z = tf.add(z, self.bias)
-        return z
+# class transposeLayer(layers.Dense):
+#     """
+#     Transpose layer for Restricted Boltzmann Machines
+#     """
+#     def __init__(self, denseLayer,
+#                  activation=None, use_bias=True,
+#                  bias_initializer='zeros',
+#                  bias_regularizer=None,
+#                  activity_regularizer=None,
+#                  bias_constraint=None,
+#                  **kwargs):
+#         """
+#         :param denseLayer:
+#         :param activation:
+#         :param use_bias:
+#         :param bias_initializer:
+#         :param bias_regularizer:
+#         :param activity_regularizer:
+#         :param bias_constraint:
+#         :param kwargs:
+#         """
+#         self.__denseLayer = denseLayer
+#
+#         super(transposeLayer, self).__init__(denseLayer._batch_input_shape[-1],
+#                                              activation=activation,
+#                                              use_bias=use_bias,
+#                                              bias_initializer=bias_initializer,
+#                                              bias_regularizer=bias_regularizer,
+#                                              activity_regularizer=activity_regularizer,
+#                                              bias_constraint=bias_constraint,
+#                                              input_shape=(denseLayer.units,),
+#                                              **kwargs)
+#
+#     @property
+#     def denseLayer(self):
+#         return self.__denseLayer
+#
+#     def build(self, input_shape):
+#         dtype = dtypes.as_dtype(self.dtype or K.floatx())
+#         if not (dtype.is_floating or dtype.is_complex):
+#             raise TypeError('Unable to build `Dense` layer with non-floating point '
+#                             'dtype %s' % (dtype,))
+#
+#         input_shape = tensor_shape.TensorShape(input_shape)
+#         last_dim = tensor_shape.dimension_value(input_shape[-1])
+#         if last_dim is None:
+#             raise ValueError('The last dimension of the inputs to `Dense` '
+#                              'should be defined. Found `None`.')
+#         self.input_spec = InputSpec(min_ndim=2, axes={-1: last_dim})
+#
+#         # self.kernel = tf.transpose(self.__denseLayer.kernel)
+#
+#         if self.use_bias:
+#             self.bias = self.add_weight('bias',
+#                                         shape=[self.units,],
+#                                         initializer=self.bias_initializer,
+#                                         regularizer=self.bias_regularizer,
+#                                         constraint=self.bias_constraint,
+#                                         dtype=self.dtype,
+#                                         trainable=True)
+#         else:
+#             self.bias = None
+#
+#         self.built = True
+#
+#     def call(self, inputs):
+#         z = tf.matmul(inputs, tf.transpose(self.denseLayer.weights[0]))
+#         if self.use_bias:
+#             z = tf.add(z, self.bias)
+#         return z
 
 class RBM(keras.Model):
     def __init__(self, n_vis, n_hid):
@@ -167,10 +180,10 @@ class RBM(keras.Model):
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
-        self.recon_loss_tracker.update_state(recon_loss)
-        self.total_loss_tracker.update_state(total_loss)
-        self.pos_loss_tracker.update_state(pos_loss)
-        self.neg_loss_tracker.update_state(neg_loss)
+        self.recon_loss_tracker.updateState(recon_loss)
+        self.total_loss_tracker.updateState(total_loss)
+        self.pos_loss_tracker.updateState(pos_loss)
+        self.neg_loss_tracker.updateState(neg_loss)
 
         return {"recon_loss": self.recon_loss_tracker.result(),
                 "total_loss": self.total_loss_tracker.result(),
@@ -241,9 +254,9 @@ class variationalAutoencoderTf(keras.Model):
         grads = tape.gradient(total_loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
-        self.total_loss_tracker.update_state(total_loss)
-        self.recon_loss_tracker.update_state(recon_loss)
-        self.kl_loss_tracker.update_state(kl_loss)
+        self.total_loss_tracker.updateState(total_loss)
+        self.recon_loss_tracker.updateState(recon_loss)
+        self.kl_loss_tracker.updateState(kl_loss)
 
         return {"total_loss": self.total_loss_tracker.result(),
                 "recon_loss": self.recon_loss_tracker.result(),
@@ -406,11 +419,11 @@ class VQVAE(keras.Model):
         self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
 
         # Loss tracking
-        self.total_loss_tracker.update_state(total_loss)
-        self.recon_loss_tracker.update_state(recon_loss)
-        self.code_loss_tracker.update_state(code_loss)
-        self.comm_loss_tracker.update_state(comm_loss)
-        self.vq_loss_tracker.update_state(code_loss + self.beta * comm_loss)  # (tf.reduce_sum(self.vq.losses))
+        self.total_loss_tracker.updateState(total_loss)
+        self.recon_loss_tracker.updateState(recon_loss)
+        self.code_loss_tracker.updateState(code_loss)
+        self.comm_loss_tracker.updateState(comm_loss)
+        self.vq_loss_tracker.updateState(code_loss + self.beta * comm_loss)  # (tf.reduce_sum(self.vq.losses))
 
         # Log results.
         return {"total_loss": self.total_loss_tracker.result(),
@@ -505,8 +518,8 @@ class GAN(keras.Model):
         # self.g_optimizer.apply_gradients(zip(grads, self.generator.trainable_weights))
 
         # Update metrics
-        self.d_loss_metric.update_state(d_loss)
-        self.g_loss_metric.update_state(g_loss)
+        self.d_loss_metric.updateState(d_loss)
+        self.g_loss_metric.updateState(g_loss)
         return {"d_loss": self.d_loss_metric.result(),
                 "g_loss": self.g_loss_metric.result()}
 
