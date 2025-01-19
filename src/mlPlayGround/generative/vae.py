@@ -5,6 +5,62 @@ import torch
 
 from mlPlayGround.model import baseTorchModel, baseLossTracker
 
+class vaeEncoder:
+    def __init__(self, nn: torch.nn.Module) -> None:
+        self.__module = nn
+
+    def __getattr__(self, item):
+        return getattr(self.__module, item)
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        return self.__module(x)
+
+    @property
+    def module(self):
+        return self.__module
+
+    @staticmethod
+    def sampleLatent(mu: torch.Tensor, logVar: torch.Tensor) -> torch.Tensor:
+        """
+        :param mu:
+        :param logVar:
+        :return:
+        """
+        samples = torch.normal(torch.zeros(mu.shape), torch.ones(mu.shape)).to(mu.device)
+        return mu + torch.exp(logVar / 2.) * samples
+
+    @staticmethod
+    def klLoss(mu: torch.Tensor, logVar: torch.Tensor) -> torch.Tensor:
+        """
+        :param mu:
+        :param logVar:
+        :return:
+        """
+        return torch.mean(torch.sum((torch.exp(logVar) + torch.square(mu) - logVar - mu.shape[1]) / 2., dim=1))
+
+class vaeDecoder:
+    def __init__(self, nn: torch.nn.Module) -> None:
+        self.__module = nn
+
+    def __getattr__(self, item):
+        return getattr(self.__module, item)
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        return self.__module(x)
+
+    @property
+    def module(self):
+        return self.__module
+
+    @staticmethod
+    def reconstructionLoss(x: torch.Tensor, recon: torch.Tensor) -> torch.Tensor:
+        """
+        :param x:
+        :param recon:
+        :return:
+        """
+        return torch.nn.functional.mse_loss(x, recon, reduction='mean')
+
 
 #################################
 #               VAE             #
@@ -14,11 +70,13 @@ class variationalAutoencoder(baseTorchModel):
     Variational Autoencoder implementation. Defaults to \beta=1
     but can also act as a beta VAE
     """
-    def __init__(self, encoder: torch.nn.Module, decoder: torch.nn.Module, beta: float = 1.0, **kwargs):
+    def __init__(self, encoder: vaeEncoder, decoder: vaeDecoder, beta: float = 1.0, **kwargs):
         # initialization
         super(variationalAutoencoder, self).__init__(**kwargs)
         self.encoder = encoder
         self.decoder = decoder
+        self.register_module('encoder_module', self.encoder.module)
+        self.register_module('decoder_module', self.decoder.module)
 
         # beta = 1.0 for the original [Kingma,Welling 2013] version but can
         # be adjusted for beta-VAEs.
@@ -44,8 +102,7 @@ class variationalAutoencoder(baseTorchModel):
 
     def forward(self, inputs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         zMean, zLogVar = self.encode(inputs)  # get the mean and variance
-        z = torch.normal(torch.zeros(zMean.shape), torch.ones(zMean.shape)).to(self.device)  # sample normal RV
-        recon = self.decoder(zMean + torch.exp(zLogVar / 2.) * z)  # Reparameterization trick!
+        recon = self.decoder(self.encoder.sampleLatent(zMean, zLogVar))
         return recon, zMean, zLogVar
 
     def trainStep(self, data, optimizer):
@@ -53,8 +110,8 @@ class variationalAutoencoder(baseTorchModel):
         X = data.to(self.device)
         recon, zMean, zLogVar = self.forward(X)
 
-        reconLoss = torch.mean(torch.sum(torch.nn.functional.binary_cross_entropy(recon, X, reduction='none'), dim=[1, 2, 3]))
-        klLoss = torch.mean(torch.sum((torch.exp(zLogVar) + torch.square(zMean) - zLogVar) / 2., dim=1))
+        reconLoss = self.decoder.reconstructionLoss(X, recon)
+        klLoss = self.encoder.klLoss(zMean, zLogVar)
         totalLoss = reconLoss + self.beta * klLoss
 
         # Backpropagation
@@ -75,8 +132,8 @@ class variationalAutoencoder(baseTorchModel):
         X = data.to(self.device)
         recon, zMean, zLogVar = self.forward(X)
 
-        reconLoss = torch.mean(torch.sum(torch.nn.functional.binary_cross_entropy(recon, X, reduction='none'), dim=[1, 2, 3]))
-        klLoss = torch.mean(torch.sum((torch.exp(zLogVar) + torch.square(zMean) - zLogVar) / 2., dim=1))
+        reconLoss = self.decoder.reconstructionLoss(X, recon)
+        klLoss = self.encoder.klLoss(zMean, zLogVar)
         totalLoss = reconLoss + self.beta * klLoss
         return totalLoss
 
@@ -86,52 +143,36 @@ class variationalAutoencoder(baseTorchModel):
 #################################
 class vaeVectorQuantizer(torch.nn.Module):
     def __init__(self, nEmbeddings, dEmbeddings, **kwargs):
-        super(VectorQuantizer, self).__init__(**kwargs)
+        super(vaeVectorQuantizer, self).__init__(**kwargs)
         self.dEmbedding = dEmbeddings
         self.nEmbeddings = nEmbeddings
 
         # Initialize the embeddings which we will quantize.
-        # w_init = tf.random_uniform_initializer()
-        self.embeddings = torch.nn.Parameter(torch.zeros(self.dEmbedding, self.nEmbeddings), requires_grad=True)
-        #
-        # tf.Variable(initial_value=w_init(shape=(self.dEmbedding,
-        #                                                       self.nEmbeddings),
-        #                                                dtype="float32"),
-        #                           trainable=True, name="embeddings_vqvae")
+        embeddings = torch.FloatTensor(self.dEmbedding, self.nEmbeddings).uniform_(-3 ** 0.5, 3 ** 0.5)
+        self.register_parameter('embeddings', torch.nn.Parameter(embeddings))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Calculate the input shape of the inputs then
         # flatten inputs keeping `embedding_dim` intact
-        input_shape = tf.shape(x)
-        flattened = torch.flatten(x, 0, -1)
+        input_shape = x.shape
+        flattened = torch.flatten(x, 1)
 
         # Quantization.
         codeIndices = self.codeIndices(flattened)
-        encodings = torch.nn.functional.one_hot(codeIndices, self.nEmbeddings)
-        quantized = encodings * torch.transpose(self.embeddings, 0, 1)
+        encodings = torch.nn.functional.one_hot(codeIndices, self.nEmbeddings).type(self.embeddings.dtype)
+        quantized = encodings @ torch.transpose(self.embeddings, 0, 1)
         quantized = torch.reshape(quantized, input_shape)
 
-        # # Calculate vector quantization loss and add that to the layer.
-        # # You can learn more about adding losses to different layers here:
-        # # https://keras.io/guides/making_new_layers_and_models_via_subclassing/
-        # code_loss = tf.reduce_mean((quantized - tf.stop_gradient(x)) ** 2)  # codebook loss
-        # comm_loss = self.beta * tf.reduce_mean((tf.stop_gradient(quantized) - x) ** 2)  # commitment loss
-        # self.add_loss(comm_loss + code_loss)
-        #
-        # # Straight-through estimator
-        # quantized = x + tf.stop_gradient(quantized - x)
         return quantized
 
     def codeIndices(self, y: torch.Tensor) -> torch.Tensor:
         # Calculate L2-norm between inputs and codes
-        similarity = y * self.embeddings
-        distances = torch.norm(y, p='fro', dim=1, keepdims=True)
-        distances += torch.norm(self.embeddings, p='fro', dim=1, keepdims=True)
-        distances -= 2 * similarity
+        distances = -2 * y @ self.embeddings
+        distances += torch.sum(y * y, dim=1, keepdim=True)
+        distances += torch.sum(self.embeddings * self.embeddings, dim=0, keepdim=True)
 
         # Derive the indices for minimum distances.
-        codes = tf.argmin(distances, axis=1)
-        return codes
+        return torch.argmin(distances, axis=1)
 
 
 class vqVariationalAutoencoder(baseTorchModel):
@@ -151,7 +192,7 @@ class vqVariationalAutoencoder(baseTorchModel):
         self.data_var = data_var
         self.beta = beta  # This parameter is best kept between [0.1, 2.0] as per the paper.
 
-        self.vq = VectorQuantizer(nEmbeddings, nDims)
+        self.vq = vaeVectorQuantizer(nEmbeddings, nDims)
 
         self.totalLossTracker = baseLossTracker(name="totalLoss")
         self.reconLossTracker = baseLossTracker(name="reconLoss")
@@ -181,12 +222,12 @@ class vqVariationalAutoencoder(baseTorchModel):
 
     def trainStep(self, data, optimizer):
         X = data.to(self.device)
-        z_e = self.encoder(x)
+        z_e = self.encoder(X)
         z_q = self.vq(z_e)
 
         # Calculate vector quantization losses
-        codeLoss = torch.mean(torch.flatten(z_q - z_e.detach(), 1) ** 2, dim=-1)  # codebook loss
-        commLoss = torch.mean(torch.flatten(z_q.detach() - z_e, 1) ** 2, dim=-1)  # commitment loss
+        codeLoss = torch.mean(torch.sum(torch.flatten(z_q - z_e.detach(), 1) ** 2, dim=-1))  # codebook loss
+        commLoss = torch.mean(torch.sum(torch.flatten(z_q.detach() - z_e, 1) ** 2, dim=-1))  # commitment loss
 
         # Straight-through estimator
         z_q = z_e + (z_q - z_e).detach()
@@ -195,7 +236,7 @@ class vqVariationalAutoencoder(baseTorchModel):
         recon = self.decode(z_q)
 
         # reconstruction loss
-        reconLoss = torch.mean(torch.flatten(X - recon, 1) ** 2, dim=-1)
+        reconLoss = torch.mean(torch.sum(torch.flatten(X - recon, 1) ** 2, dim=-1))
 
         # total loss
         totalLoss = reconLoss / self.data_var + codeLoss + self.beta * commLoss
@@ -225,8 +266,8 @@ class vqVariationalAutoencoder(baseTorchModel):
         z_q = self.vq(z_e)
 
         # Calculate vector quantization losses
-        codeLoss = torch.mean(torch.flatten(z_q - z_e.detach(), 1) ** 2, dim=-1)  # codebook loss
-        commLoss = torch.mean(torch.flatten(z_q.detach() - z_e, 1) ** 2, dim=-1)  # commitment loss
+        codeLoss = torch.mean(torch.sum(torch.flatten(z_q - z_e.detach(), 1) ** 2, dim=-1))  # codebook loss
+        commLoss = torch.mean(torch.sum(torch.flatten(z_q.detach() - z_e, 1) ** 2, dim=-1))  # commitment loss
 
         # Straight-through estimator
         z_q = z_e + (z_q - z_e).detach()
@@ -235,9 +276,113 @@ class vqVariationalAutoencoder(baseTorchModel):
         recon = self.decode(z_q)
 
         # reconstruction loss
-        reconLoss = torch.mean(torch.flatten(X - recon, 1) ** 2, dim=-1)
+        reconLoss = torch.mean(torch.sum(torch.flatten(X - recon, 1) ** 2, dim=-1))
 
         # total loss
         totalLoss = reconLoss / self.data_var + codeLoss + self.beta * commLoss
 
         return totalLoss
+
+
+#################################
+#             AVAE              #
+#################################
+class autoencodingVariationalAutoencoder(baseTorchModel):
+    """
+    Autoencoding Variational Autoencoder implementation.
+    https://arxiv.org/abs/2012.03715
+    """
+    def __init__(self, encoder: vaeEncoder, decoder: vaeDecoder, rho: float = 0.99, **kwargs):
+        # initialization
+        super(autoencodingVariationalAutoencoder, self).__init__(**kwargs)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.register_module('encoder_module', self.encoder.module)
+        self.register_module('decoder_module', self.decoder.module)
+
+        assert (rho <= 1.0)
+        self.rho = rho
+        self.rhosqr = rho * rho
+
+        self.totalLossTracker = baseLossTracker(name="total_loss")
+        self.reconLossTracker = baseLossTracker(name="recon_loss")
+        self.klLossTracker = baseLossTracker(name="kl_loss")
+        self.condLossTracker = baseLossTracker(name="cond_loss")
+
+    @property
+    def metrics(self):
+        return [self.totalLossTracker,
+                self.reconLossTracker,
+                self.klLossTracker]
+
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        mean, logVar = torch.split(self.encoder(x), split_size_or_sections=2, dim=1)
+        return mean, logVar
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        return self.decoder(z)
+
+    def forward(self, inputs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        zMean, zLogVar = self.encode(inputs)  # get the mean and variance
+        z = torch.normal(torch.zeros(zMean.shape), torch.ones(zMean.shape)).to(self.device)  # sample normal RV
+        recon = self.decoder(zMean + torch.exp(zLogVar / 2.) * z)  # Reparameterization trick!
+        return recon, zMean, zLogVar
+
+    def trainStep(self, data, optimizer):
+        # implement the abstract method for a single training update
+        X = data.to(self.device)
+
+        # auxiliary variables
+        auxX, _, _ = self.forward(X)
+        auxX = auxX.detach()
+        auxzMean, auxzlogVar = self.encode(auxX)
+
+        recon, zMean, zLogVar = self.forward(X)
+
+        reconLoss = self.decoder.reconstructionLoss(X, recon)
+        klLoss = self.encoder.klLoss(zMean, zLogVar)
+        condLoss = torch.exp(auxzlogVar) + self.rhosqr * torch.exp(zLogVar)
+        condLoss += torch.square(auxzMean - self.rho * zMean)
+        condLoss = torch.mean(torch.sum(condLoss, dim=1)) / (2.0 * (1 - self.rhosqr)) - torch.mean(torch.mean(auxzlogVar, dim=1)) / 2.0
+        totalLoss = reconLoss + klLoss + condLoss
+
+        # Backpropagation
+        totalLoss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+        self.totalLossTracker.updateState(totalLoss)
+        self.reconLossTracker.updateState(reconLoss)
+        self.klLossTracker.updateState(klLoss)
+        self.condLossTracker.updateState(condLoss)
+
+        return {"totalLoss": self.totalLossTracker.result(),
+                "reconLoss": self.reconLossTracker.result(),
+                "klLoss": self.klLossTracker.result(),
+                "condLoss": self.condLossTracker.result()}
+
+    def validStep(self, data):
+        # implement the abstract method for a single training update
+        X = data.to(self.device)
+
+        # auxiliary variables
+        auxX, _, _ = self.forward(X)
+        auxX = auxX.detach()
+        auxzMean, auxzlogVar = self.encode(auxX)
+
+        recon, zMean, zLogVar = self.forward(X)
+
+        reconLoss = self.decoder.reconstructionLoss(X, recon)
+        klLoss = self.encoder.klLoss(zMean, zLogVar)
+        condLoss = torch.exp(auxzlogVar) + self.rhosqr * torch.exp(zLogVar)
+        condLoss += torch.square(auxzMean - self.rho * zMean)
+        condLoss = torch.mean(torch.sum(condLoss, dim=1)) / (2.0 * (1 - self.rhosqr)) - torch.mean(torch.mean(auxzlogVar, dim=1)) / 2.0
+        totalLoss = reconLoss + klLoss + condLoss
+        return totalLoss
+
+
+if __name__ == "__main__":
+    m = vaeVectorQuantizer(nEmbeddings=10, dEmbeddings=100)
+    input = torch.randn(20, 25, 2, 2)
+    output = m(input)
+
