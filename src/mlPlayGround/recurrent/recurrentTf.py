@@ -735,8 +735,8 @@ class Transformer(tf.keras.Model):
         grads = tape.gradient(loss, self.trainable_variables)
         self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
 
-        self.loss_tracker.update_state(loss)
-        self.acc_tracker.update_state(acc)
+        self.loss_tracker.updateState(loss)
+        self.acc_tracker.updateState(acc)
 
         return {"loss": self.loss_tracker.result(),
                 "acc": self.acc_tracker.result()}
